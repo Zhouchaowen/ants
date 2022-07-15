@@ -36,21 +36,26 @@ type Pool struct {
 	// capacity of the pool, a negative value means that the capacity of pool is limitless, an infinite pool is used to
 	// avoid potential issue of endless blocking caused by nested usage of a pool: submitting a task to pool
 	// which submits a new task to the same pool.
+	// 池的容量，负值表示池的容量是无限的，无限池用于避免由于池的嵌套使用而导致的无限阻塞的潜在问题：将任务提交给池，该池将新任务提交给同一个水池。
 	capacity int32
 
 	// running is the number of the currently running goroutines.
+	// 当前正在执行任务的 worker 数量
 	running int32
 
 	// lock for protecting the worker queue.
+	// 队列锁
 	lock sync.Locker
 
 	// workers is a slice that store the available workers.
 	workers workerArray
 
 	// state is used to notice the pool to closed itself.
+	// 用于通知池自行关闭
 	state int32
 
 	// cond for waiting to get an idle worker.
+	// 等待获得一个 worker
 	cond *sync.Cond
 
 	// workerCache speeds up the obtainment of a usable worker in function:retrieveWorker.
@@ -127,16 +132,16 @@ func NewPool(size int, options ...Option) (*Pool, error) {
 
 	p := &Pool{
 		capacity: int32(size),
-		lock:     internal.NewSpinLock(),
+		lock:     internal.NewSpinLock(), // 无锁lock
 		options:  opts,
 	}
-	p.workerCache.New = func() interface{} {
+	p.workerCache.New = func() interface{} { // pool 池
 		return &goWorker{
 			pool: p,
 			task: make(chan func(), workerChanCap),
 		}
 	}
-	if p.options.PreAlloc {
+	if p.options.PreAlloc { // 预分配
 		if size == -1 {
 			return nil, ErrInvalidPreAllocSize
 		}
@@ -148,6 +153,7 @@ func NewPool(size int, options ...Option) (*Pool, error) {
 	p.cond = sync.NewCond(p.lock)
 
 	// Start a goroutine to clean up expired workers periodically.
+	// 启动一个 goroutine 定期清理过期的工作人员
 	var ctx context.Context
 	ctx, p.stopHeartbeat = context.WithCancel(context.Background())
 	go p.purgePeriodically(ctx)
@@ -176,11 +182,13 @@ func (p *Pool) Submit(task func()) error {
 }
 
 // Running returns the number of workers currently running.
+// 返回当前运行的工人数。
 func (p *Pool) Running() int {
 	return int(atomic.LoadInt32(&p.running))
 }
 
 // Free returns the number of available goroutines to work, -1 indicates this pool is unlimited.
+// Free 返回可用的 goroutines 的数量，-1 表示这个池是无限的。
 func (p *Pool) Free() int {
 	c := p.Cap()
 	if c < 0 {
@@ -274,9 +282,10 @@ func (p *Pool) addWaiting(delta int) {
 }
 
 // retrieveWorker returns an available worker to run the tasks.
+// 返回一个可用的工作人员来运行任务
 func (p *Pool) retrieveWorker() (w *goWorker) {
 	spawnWorker := func() {
-		w = p.workerCache.Get().(*goWorker)
+		w = p.workerCache.Get().(*goWorker) // a new worker
 		w.run()
 	}
 
@@ -295,13 +304,13 @@ func (p *Pool) retrieveWorker() (w *goWorker) {
 			p.lock.Unlock()
 			return
 		}
-	retry:
+	retry: // Waiting 返回等待执行的任务数
 		if p.options.MaxBlockingTasks != 0 && p.Waiting() >= p.options.MaxBlockingTasks {
 			p.lock.Unlock()
 			return
 		}
 		p.addWaiting(1)
-		p.cond.Wait() // block and wait for an available worker
+		p.cond.Wait() // block and wait for an available worker 阻止并等待可用的工作人员
 		p.addWaiting(-1)
 
 		if p.IsClosed() {
@@ -316,7 +325,7 @@ func (p *Pool) retrieveWorker() (w *goWorker) {
 			return
 		}
 		if w = p.workers.detach(); w == nil {
-			if nw < p.Cap() {
+			if nw < p.Cap() { // running worker & cap worker
 				p.lock.Unlock()
 				spawnWorker()
 				return
@@ -329,12 +338,13 @@ func (p *Pool) retrieveWorker() (w *goWorker) {
 }
 
 // revertWorker puts a worker back into free pool, recycling the goroutines.
+// 将一个 worker 放回空闲池，回收 goroutines
 func (p *Pool) revertWorker(worker *goWorker) bool {
 	if capacity := p.Cap(); (capacity > 0 && p.Running() > capacity) || p.IsClosed() {
 		p.cond.Broadcast()
 		return false
 	}
-	worker.recycleTime = time.Now()
+	worker.recycleTime = time.Now() // 回收时间
 	p.lock.Lock()
 
 	// To avoid memory leaks, add a double check in the lock scope.
@@ -351,6 +361,7 @@ func (p *Pool) revertWorker(worker *goWorker) bool {
 	}
 
 	// Notify the invoker stuck in 'retrieveWorker()' of there is an available worker in the worker queue.
+	// 通知卡在“retrieveWorker()”中的调用者在工作队列中有可用的工作人员。
 	p.cond.Signal()
 	p.lock.Unlock()
 	return true

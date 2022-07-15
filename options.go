@@ -21,10 +21,12 @@ type Options struct {
 	ExpiryDuration time.Duration
 
 	// PreAlloc indicates whether to make memory pre-allocation when initializing Pool.
+	// 表示初始化 Pool 时是否进行内存预分配。
 	PreAlloc bool
 
 	// Max number of goroutine blocking on pool.Submit.
 	// 0 (default value) means no such limit.
+	// 池上的最大 goroutine 阻塞数,提交。 0（默认值）表示没有这样的限制。
 	MaxBlockingTasks int
 
 	// When Nonblocking is true, Pool.Submit will never be blocked.

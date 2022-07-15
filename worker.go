@@ -38,11 +38,13 @@ type goWorker struct {
 	task chan func()
 
 	// recycleTime will be updated when putting a worker back into queue.
+	// 将 worker 放回队列时会更新
 	recycleTime time.Time
 }
 
 // run starts a goroutine to repeat the process
 // that performs the function calls.
+// run 启动一个 goroutine 以重复执行函数调用的过程。
 func (w *goWorker) run() {
 	w.pool.addRunning(1)
 	go func() {
@@ -63,7 +65,7 @@ func (w *goWorker) run() {
 			w.pool.cond.Signal()
 		}()
 
-		for f := range w.task {
+		for f := range w.task { // 消费任务
 			if f == nil {
 				return
 			}

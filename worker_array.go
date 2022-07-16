@@ -17,7 +17,7 @@ type workerArray interface {
 	len() int
 	isEmpty() bool
 	insert(worker *goWorker) error
-	detach() *goWorker
+	detach() *goWorker // 从workerArray中取出一个 worker
 	retrieveExpiry(duration time.Duration) []*goWorker
 	reset()
 }

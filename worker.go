@@ -50,11 +50,12 @@ func (w *goWorker) run() {
 	go func() {
 		defer func() {
 			w.pool.addRunning(-1)
-			w.pool.workerCache.Put(w)
-			if p := recover(); p != nil {
+			w.pool.workerCache.Put(w)     // 放回生成器池pool中
+			if p := recover(); p != nil { // TODO 捕获任务执行过程中抛出的panic
+				// goWorker panic 后的回调
 				if ph := w.pool.options.PanicHandler; ph != nil {
 					ph(p)
-				} else {
+				} else { // 未配置PanicHandler就打印日志
 					w.pool.options.Logger.Printf("worker exits from a panic: %v\n", p)
 					var buf [4096]byte
 					n := runtime.Stack(buf[:], false)
@@ -64,13 +65,17 @@ func (w *goWorker) run() {
 			// Call Signal() here in case there are goroutines waiting for available workers.
 			w.pool.cond.Signal()
 		}()
-
+		// 实际上for f := range w.task这个循环直到通道task关闭或取出为nil的任务才会终止。
+		// 所以这个 goroutine 一直在运行，这正是ants高性能的关键所在。
+		// 每个goWorker只会启动一次 goroutine， 后续重复利用这个 goroutine。
+		// goroutine 每次只执行一个任务就会被放回池中。
 		for f := range w.task { // 消费任务
-			if f == nil {
+			if f == nil { // 等待 purgePeriodically和 x.reset() 发送空消息
 				return
 			}
 			f()
-			if ok := w.pool.revertWorker(w); !ok {
+			// 如果放回操作失败，则会调用return，这会让 goroutine 运行结束，防止 goroutine 泄漏。
+			if ok := w.pool.revertWorker(w); !ok { // TODO 有可能task没有消费完？
 				return
 			}
 		}

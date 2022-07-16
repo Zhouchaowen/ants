@@ -36,7 +36,8 @@ type Pool struct {
 	// capacity of the pool, a negative value means that the capacity of pool is limitless, an infinite pool is used to
 	// avoid potential issue of endless blocking caused by nested usage of a pool: submitting a task to pool
 	// which submits a new task to the same pool.
-	// 池的容量，负值表示池的容量是无限的，无限池用于避免由于池的嵌套使用而导致的无限阻塞的潜在问题：将任务提交给池，该池将新任务提交给同一个水池。
+	// 池的容量，负值表示池的容量是无限的
+	// 无限池用于避免由于池的嵌套使用而导致的无限阻塞的潜在问题：将任务提交给池，该池将新任务提交给同一个水池。
 	capacity int32
 
 	// running is the number of the currently running goroutines.
@@ -44,30 +45,32 @@ type Pool struct {
 	running int32
 
 	// lock for protecting the worker queue.
-	// 队列锁
+	// 自己实现了一个自旋锁
 	lock sync.Locker
 
 	// workers is a slice that store the available workers.
 	workers workerArray
 
 	// state is used to notice the pool to closed itself.
-	// 用于通知池自行关闭
+	// 记录池子当前的状态，是否已关闭，用于通知池自行关闭
 	state int32
 
 	// cond for waiting to get an idle worker.
-	// 等待获得一个 worker
+	// 处理任务等待和唤醒
 	cond *sync.Cond
 
 	// workerCache speeds up the obtainment of a usable worker in function:retrieveWorker.
+	// 对象池管理和创建worker对象
 	workerCache sync.Pool
 
 	// waiting is the number of goroutines already been blocked on pool.Submit(), protected by pool.lock
+	// 已经被阻塞的 goroutine 的数量
 	waiting int32
 
 	heartbeatDone int32
 	stopHeartbeat context.CancelFunc
 
-	options *Options
+	options *Options // 配置
 }
 
 // purgePeriodically clears expired workers periodically which runs in an individual goroutine, as a scavenger.
@@ -208,6 +211,7 @@ func (p *Pool) Cap() int {
 }
 
 // Tune changes the capacity of this pool, note that it is noneffective to the infinite or pre-allocation pool.
+// Tune 改变这个池的容量，注意它对无限或预分配池无效。
 func (p *Pool) Tune(size int) {
 	capacity := p.Cap()
 	if capacity == -1 || size <= 0 || size == capacity || p.options.PreAlloc {
@@ -282,7 +286,13 @@ func (p *Pool) addWaiting(delta int) {
 }
 
 // retrieveWorker returns an available worker to run the tasks.
-// 返回一个可用的工作人员来运行任务
+// 返回一个可用的 goWorker 来运行任务。
+// 1.先获取 workerArray 中的 goWorker。
+// 2.workerArray 获取不到。要么创建，要么阻塞，要么返回。
+// 3.goWorker数量没有超过workerArray的cap则创建。
+// 4.超过了workerArray的cap。判断是否开启Nonblocking，开启就立刻返回。
+// 5.没开启Nonblocking，判断阻塞是否超过配置的最大阻塞等待数量，超过就立刻返回。
+// 6.没超过，则阻塞等待goWorker被放回workerArray中在取用。
 func (p *Pool) retrieveWorker() (w *goWorker) {
 	spawnWorker := func() {
 		w = p.workerCache.Get().(*goWorker) // a new worker
@@ -319,12 +329,12 @@ func (p *Pool) retrieveWorker() (w *goWorker) {
 		}
 
 		var nw int
-		if nw = p.Running(); nw == 0 { // awakened by the scavenger
+		if nw = p.Running(); nw == 0 { // awakened by the scavenger 可能池子刚刚执行了Release()关闭
 			p.lock.Unlock()
 			spawnWorker()
 			return
 		}
-		if w = p.workers.detach(); w == nil {
+		if w = p.workers.detach(); w == nil { // 多个协程抢workerArray的数据
 			if nw < p.Cap() { // running worker & cap worker
 				p.lock.Unlock()
 				spawnWorker()
@@ -341,10 +351,10 @@ func (p *Pool) retrieveWorker() (w *goWorker) {
 // 将一个 worker 放回空闲池，回收 goroutines
 func (p *Pool) revertWorker(worker *goWorker) bool {
 	if capacity := p.Cap(); (capacity > 0 && p.Running() > capacity) || p.IsClosed() {
-		p.cond.Broadcast()
+		p.cond.Broadcast() // 当前运行中的 goWorker已经超过 goWorker array 的 cap了。
 		return false
 	}
-	worker.recycleTime = time.Now() // 回收时间
+	worker.recycleTime = time.Now() // 设置放回时间
 	p.lock.Lock()
 
 	// To avoid memory leaks, add a double check in the lock scope.

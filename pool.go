@@ -76,6 +76,7 @@ type Pool struct {
 // purgePeriodically clears expired workers periodically which runs in an individual goroutine, as a scavenger.
 func (p *Pool) purgePeriodically(ctx context.Context) {
 	heartbeat := time.NewTicker(p.options.ExpiryDuration)
+
 	defer func() {
 		heartbeat.Stop()
 		atomic.StoreInt32(&p.heartbeatDone, 1)
@@ -123,10 +124,12 @@ func NewPool(size int, options ...Option) (*Pool, error) {
 		size = -1
 	}
 
-	if expiry := opts.ExpiryDuration; expiry < 0 {
-		return nil, ErrInvalidPoolExpiry
-	} else if expiry == 0 {
-		opts.ExpiryDuration = DefaultCleanIntervalTime
+	if !opts.DisablePurge {
+		if expiry := opts.ExpiryDuration; expiry < 0 {
+			return nil, ErrInvalidPoolExpiry
+		} else if expiry == 0 {
+			opts.ExpiryDuration = DefaultCleanIntervalTime
+		}
 	}
 
 	if opts.Logger == nil {
@@ -159,8 +162,9 @@ func NewPool(size int, options ...Option) (*Pool, error) {
 	// 启动一个 goroutine 定期清理过期的工作人员
 	var ctx context.Context
 	ctx, p.stopHeartbeat = context.WithCancel(context.Background())
-	go p.purgePeriodically(ctx)
-
+	if !p.options.DisablePurge {
+		go p.purgePeriodically(ctx)
+	}
 	return p, nil
 }
 
@@ -257,7 +261,7 @@ func (p *Pool) ReleaseTimeout(timeout time.Duration) error {
 
 	endTime := time.Now().Add(timeout)
 	for time.Now().Before(endTime) {
-		if p.Running() == 0 && atomic.LoadInt32(&p.heartbeatDone) == 1 {
+		if p.Running() == 0 && (p.options.DisablePurge || atomic.LoadInt32(&p.heartbeatDone) == 1) {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -271,7 +275,9 @@ func (p *Pool) Reboot() {
 		atomic.StoreInt32(&p.heartbeatDone, 0)
 		var ctx context.Context
 		ctx, p.stopHeartbeat = context.WithCancel(context.Background())
-		go p.purgePeriodically(ctx)
+		if !p.options.DisablePurge {
+			go p.purgePeriodically(ctx)
+		}
 	}
 }
 
